@@ -91,9 +91,6 @@ func (o *Base) updateFromConfig() error {
 	if o.Connection == "" {
 		o.Connection = conf.Connection
 	}
-	if conf.Srid == 0 {
-		conf.Srid = defaultSrid
-	}
 	if o.Srid == defaultSrid {
 		o.Srid = conf.Srid
 	}
@@ -149,8 +146,8 @@ func (o *Base) updateFromConfig() error {
 
 func (o *Base) check() []error {
 	errs := []error{}
-	if o.Srid != 3857 && o.Srid != 4326 {
-		errs = append(errs, errors.New("only -srid=3857 or -srid=4326 are supported"))
+	if o.Srid != 3857 && o.Srid != 4326 && o.Srid != 0 {
+		errs = append(errs, errors.New("only -srid=3857, -srid=4326 or -srid=0 are supported"))
 	}
 	if o.MappingFile == "" {
 		errs = append(errs, errors.New("missing mapping"))

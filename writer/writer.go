@@ -62,11 +62,11 @@ func (writer *OsmElemWriter) Wait() {
 }
 
 func (writer *OsmElemWriter) NodesToSrid(nodes []osm.Node) {
-	if writer.srid == 4326 {
+	if writer.srid == 4326 || writer.srid == 0 {
 		return
 	}
 	if writer.srid != 3857 {
-		panic("invalid srid. only 4326 and 3857 are supported")
+		panic("invalid srid. only 4326, 3857, or 0 (unspecified) are supported")
 	}
 
 	for i, nd := range nodes {
@@ -75,11 +75,11 @@ func (writer *OsmElemWriter) NodesToSrid(nodes []osm.Node) {
 }
 
 func (writer *OsmElemWriter) NodeToSrid(node *osm.Node) {
-	if writer.srid == 4326 {
+	if writer.srid == 4326 || writer.srid == 0 {
 		return
 	}
 	if writer.srid != 3857 {
-		panic("invalid srid. only 4326 and 3857 are supported")
+		panic("invalid srid. only 4326, 3857, or 0 (unspecified) are supported")
 	}
 	node.Long, node.Lat = proj.WgsToMerc(node.Long, node.Lat)
 }
