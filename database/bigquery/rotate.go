@@ -3,6 +3,7 @@ package bigquery
 import (
 	"context"
 
+	"cloud.google.com/go/bigquery"
 	"github.com/omniscale/imposm3/log"
 )
 
@@ -44,15 +45,16 @@ func (bq *BigQuery) rotate(source, dest, backup string) error {
 			continue
 		}
 
+		// Take a snapshot of the destination table before overwriting it
 		if destExists {
 
 			log.Printf("[info] backup of %s, to %s", tableName, backup)
 
-			if err := bq.deleteTable(backupTable); err != nil {
-				return err
-			}
-
 			copier := backupTable.CopierFrom(destTable)
+			copier.CreateDisposition = bigquery.CreateIfNeeded
+			copier.WriteDisposition = bigquery.WriteTruncate
+			copier.OperationType = bigquery.SnapshotOperation
+
 			job, err := copier.Run(context.Background())
 			if err != nil {
 				return err
@@ -64,7 +66,12 @@ func (bq *BigQuery) rotate(source, dest, backup string) error {
 
 		}
 
+		// Copy data from the source to destination table, truncating it if needed
 		copier := destTable.CopierFrom(sourceTable)
+		copier.CreateDisposition = bigquery.CreateIfNeeded
+		copier.WriteDisposition = bigquery.WriteTruncate
+		copier.OperationType = bigquery.CopyOperation
+
 		job, err := copier.Run(context.Background())
 		if err != nil {
 			return err

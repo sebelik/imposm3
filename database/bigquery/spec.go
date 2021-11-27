@@ -38,6 +38,39 @@ type GeneralizedTableSpec struct {
 	Generalizations   []*GeneralizedTableSpec
 }
 
+type AvroSchema struct {
+	Type   AvroType    `json:"type"`
+	Name   string      `json:"name"`
+	Fields []AvroField `json:"fields,omitempty"`
+}
+
+type AvroField struct {
+	Type    []AvroType  `json:"type"`
+	Name    string      `json:"name"`
+	Default interface{} `json:"default,omitempty"`
+	Fields  []AvroField `json:"fields,omitempty"` // Schema of fields in a Record
+	Symbols []string    `json:"symbols,omitempty"`
+	Items   *AvroField  `json:"items,omitempty"` // Schema of items in an Array
+}
+
+type AvroType string
+
+const (
+	AvroTypeNull   AvroType = "null"
+	AvroTypeBool   AvroType = "boolean"
+	AvroTypeInt    AvroType = "int"
+	AvroTypeLong   AvroType = "long"
+	AvroTypeFloat  AvroType = "float"
+	AvroTypeDouble AvroType = "double"
+	AvroTypeBytes  AvroType = "bytes"
+	AvroTypeString AvroType = "string"
+	AvroTypeRecord AvroType = "record"
+	AvroTypeEnum   AvroType = "enum"
+	AvroTypeArray  AvroType = "array"
+	AvroTypeMap    AvroType = "map"
+	AvroTypeFixed  AvroType = "fixed"
+)
+
 func (f *FieldSpec) BigQueryName() string {
 	// "BigQuery fields must contain only letters, numbers, and underscores,
 	// start with a letter or underscore, and be at most 300 characters long."
@@ -64,12 +97,58 @@ func (f *FieldSpec) AsBigQueryFieldSchema() *bigquery.FieldSchema {
 
 }
 
-func (spec *TableSpec) BigQuerySchema() bigquery.Schema {
+func (f *FieldSpec) AsAvroFieldSchema() AvroField {
+
+	schema := AvroField{
+		Name: f.BigQueryName(),
+		Type: []AvroType{AvroTypeNull, f.Type.AvroType()},
+	}
+
+	nestedFields := []AvroField{}
+
+	// Append nested fields
+	if len(f.Fields) > 0 {
+		for _, nestedField := range f.Fields {
+			nestedFields = append(nestedFields, nestedField.AsAvroFieldSchema())
+		}
+	}
+
+	if f.Type.Repeated() {
+		schema.Type = []AvroType{AvroTypeNull, AvroTypeArray}
+		schema.Items = &AvroField{
+			Type:   []AvroType{AvroTypeNull, f.Type.AvroType()},
+			Name:   f.BigQueryName(),
+			Fields: nestedFields,
+		}
+	} else {
+		schema.Fields = nestedFields
+	}
+
+	return schema
+
+}
+
+func (spec *TableSpec) AsBigQueryTableSchema() bigquery.Schema {
 
 	schema := bigquery.Schema{}
 
 	for _, field := range spec.Fields {
 		schema = append(schema, field.AsBigQueryFieldSchema())
+	}
+
+	return schema
+
+}
+
+func (spec *TableSpec) AsAvroSchema() AvroSchema {
+
+	schema := AvroSchema{
+		Name: spec.Name,
+		Type: AvroTypeRecord,
+	}
+
+	for _, field := range spec.Fields {
+		schema.Fields = append(schema.Fields, field.AsAvroFieldSchema())
 	}
 
 	return schema

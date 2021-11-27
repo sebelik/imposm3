@@ -9,6 +9,7 @@ import (
 
 type FieldType interface {
 	Type() bigquery.FieldType
+	AvroType() AvroType
 	Repeated() bool
 	GeneralizeSQL(colSpec *FieldSpec, spec *GeneralizedTableSpec) string
 }
@@ -22,12 +23,43 @@ func (t *simpleFieldType) Type() bigquery.FieldType {
 	return t.fieldType
 }
 
+func (t *simpleFieldType) AvroType() AvroType {
+
+	switch t.fieldType {
+	case bigquery.IntegerFieldType:
+		return AvroTypeLong
+	case bigquery.BigNumericFieldType:
+		return AvroTypeLong
+	case bigquery.FloatFieldType:
+		return AvroTypeFloat
+	case bigquery.NumericFieldType:
+		return AvroTypeDouble
+
+	case bigquery.BytesFieldType:
+		return AvroTypeBytes
+
+	case bigquery.BooleanFieldType:
+		return AvroTypeBool
+
+	case bigquery.StringFieldType:
+		return AvroTypeString
+
+	case bigquery.GeographyFieldType:
+		return AvroTypeString
+
+	case bigquery.RecordFieldType:
+		return AvroTypeRecord
+	}
+
+	return AvroTypeNull
+}
+
 func (t *simpleFieldType) Repeated() bool {
 	return t.repeated
 }
 
 func (t *simpleFieldType) GeneralizeSQL(colSpec *FieldSpec, spec *GeneralizedTableSpec) string {
-	return "\"" + colSpec.Name + "\""
+	return colSpec.BigQueryName()
 }
 
 type geometryType struct {
@@ -38,14 +70,16 @@ func (t *geometryType) Type() bigquery.FieldType {
 	return t.fieldType
 }
 
+func (t *geometryType) AvroType() AvroType {
+	return AvroTypeString
+}
+
 func (t *geometryType) Repeated() bool {
 	return false
 }
 
 func (t *geometryType) GeneralizeSQL(colSpec *FieldSpec, spec *GeneralizedTableSpec) string {
-	return fmt.Sprintf(`ST_SIMPLIFY("%s", %f) as "%s"`,
-		colSpec.Name, spec.Tolerance, colSpec.Name,
-	)
+	return fmt.Sprintf("ST_SIMPLIFY(%s, %f) as %s", colSpec.BigQueryName(), spec.Tolerance, colSpec.BigQueryName())
 }
 
 type validatedGeometryType struct {
@@ -57,9 +91,7 @@ func (t *validatedGeometryType) GeneralizeSQL(colSpec *FieldSpec, spec *Generali
 		// TODO return warning earlier
 		log.Printf("[warn] validated_geometry column returns polygon geometries for %s", spec.Name)
 	}
-	return fmt.Sprintf(`ST_BUFFER(ST_SIMPLIFY("%s", %f), 0) as "%s"`,
-		colSpec.Name, spec.Tolerance, colSpec.Name,
-	)
+	return fmt.Sprintf("ST_BUFFER(ST_SIMPLIFY(%s, %f), 0) as %s", colSpec.BigQueryName(), spec.Tolerance, colSpec.BigQueryName())
 }
 
 var bqTypes map[string]FieldType

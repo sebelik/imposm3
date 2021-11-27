@@ -7,6 +7,7 @@ import (
 	"sync"
 
 	"cloud.google.com/go/bigquery"
+	"cloud.google.com/go/storage"
 	osm "github.com/omniscale/go-osm"
 	"github.com/omniscale/imposm3/database"
 	"github.com/omniscale/imposm3/geom"
@@ -22,16 +23,7 @@ type BigQueryError struct {
 }
 
 func (e *BigQueryError) Error() string {
-	return fmt.Sprintf("SQL Error: %s in query %s", e.originalError.Error(), e.query)
-}
-
-type SQLInsertError struct {
-	BigQueryError
-	data interface{}
-}
-
-func (e *SQLInsertError) Error() string {
-	return fmt.Sprintf("SQL Error: %s in query %s (%+v)", e.originalError.Error(), e.query, e.data)
+	return fmt.Sprintf("BigQuery Error: %s in query %s", e.originalError.Error(), e.query)
 }
 
 func (bq *BigQuery) createTable(spec TableSpec) error {
@@ -46,7 +38,7 @@ func (bq *BigQuery) createTable(spec TableSpec) error {
 	metadata := &bigquery.TableMetadata{
 		Name:     spec.Name,
 		Location: bq.Location,
-		Schema:   spec.BigQuerySchema(),
+		Schema:   spec.AsBigQueryTableSchema(),
 		Clustering: &bigquery.Clustering{
 			Fields: []string{},
 		},
@@ -199,7 +191,7 @@ func (bq *BigQuery) generalizeTable(table *GeneralizedTableSpec) error {
 		cols = append(cols, col.Type.GeneralizeSQL(&col, table))
 	}
 
-	columnSQL := strings.Join(cols, ",\n")
+	columnSQL := strings.Join(cols, ", ")
 
 	var sourceTable string
 	if table.SourceGeneralized != nil {
@@ -208,7 +200,7 @@ func (bq *BigQuery) generalizeTable(table *GeneralizedTableSpec) error {
 		sourceTable = table.Source.Name
 	}
 
-	sql := fmt.Sprintf(`CREATE OR REPLACE TABLE "%s"."%s" AS (SELECT %s FROM "%s"."%s"%s)`, bq.Config.ImportSchema, table.Name, columnSQL, bq.Config.ImportSchema, sourceTable, where)
+	sql := fmt.Sprintf("CREATE OR REPLACE TABLE `%s.%s` AS (SELECT %s FROM `%s.%s` %s)", bq.Config.ImportSchema, table.Name, columnSQL, bq.Config.ImportSchema, sourceTable, where)
 	query := bq.Client.Query(sql)
 
 	job, err := query.Run(context.Background())
@@ -231,7 +223,10 @@ func (bq *BigQuery) generalizeTable(table *GeneralizedTableSpec) error {
 
 type BigQuery struct {
 	Client                  *bigquery.Client
+	GCSClient               *storage.Client
 	ProjectId               string
+	TempGCSBucket           string
+	TempGCSPrefix           string
 	Location                string
 	Config                  database.Config
 	Tables                  map[string]*TableSpec
@@ -251,7 +246,17 @@ func (bq *BigQuery) Open() error {
 	}
 
 	bq.Client, err = bigquery.NewClient(context.Background(), bq.ProjectId)
-	return errors.Wrap(err, "creating BigQuery client")
+	if err != nil {
+		return errors.Wrap(err, "creating BigQuery client")
+	}
+
+	bq.GCSClient, err = storage.NewClient(context.Background())
+	if err != nil {
+		return errors.Wrap(err, "creating GCS client")
+	}
+
+	return nil
+
 }
 
 func (bq *BigQuery) InsertPoint(elem osm.Element, geom geom.Geometry, matches []mapping.Match) error {
@@ -398,7 +403,7 @@ func New(conf database.Config, m *config.Mapping) (database.DB, error) {
 
 	// ConnectionParams is a list of semicolon-separated parameters
 	// bigquery://ProjectId={PROJECT ID};Location={LOCATION}
-	db.ProjectId, db.Location = parseConnectionString(db.Config.ConnectionParams)
+	db.ProjectId, db.TempGCSBucket, db.TempGCSPrefix, db.Location = parseConnectionString(db.Config.ConnectionParams)
 
 	for name, table := range m.Tables {
 		db.Tables[name], err = NewTableSpec(db, table)

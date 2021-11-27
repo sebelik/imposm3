@@ -28,10 +28,13 @@ func newTxRouter(bq *BigQuery, bulkImport bool) (*TxRouter, error) {
 }
 
 func (txr *TxRouter) End() error {
+	var outErr error
 	for _, tt := range txr.Tables {
-		tt.End()
+		if err := tt.End(); err != nil {
+			outErr = err
+		}
 	}
-	return nil
+	return outErr
 }
 
 func (txr *TxRouter) Abort() error {
