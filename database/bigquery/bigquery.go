@@ -7,9 +7,9 @@ import (
 	"sync"
 
 	"cloud.google.com/go/bigquery"
-	"cloud.google.com/go/storage"
 	osm "github.com/omniscale/go-osm"
 	"github.com/omniscale/imposm3/database"
+	"github.com/omniscale/imposm3/database/gcs"
 	"github.com/omniscale/imposm3/geom"
 	"github.com/omniscale/imposm3/log"
 	"github.com/omniscale/imposm3/mapping"
@@ -26,34 +26,6 @@ func (e *BigQueryError) Error() string {
 	return fmt.Sprintf("BigQuery Error: %s in query %s", e.originalError.Error(), e.query)
 }
 
-func (bq *BigQuery) createTable(spec TableSpec) error {
-
-	table := bq.Client.Dataset(spec.Dataset).Table(spec.Name)
-
-	// Drop the table if exists
-	if err := bq.deleteTable(table); err != nil {
-		return errors.Wrapf(err, "dropping BigQuery table %s", table.FullyQualifiedName())
-	}
-
-	metadata := &bigquery.TableMetadata{
-		Name:     spec.Name,
-		Location: bq.Location,
-		Schema:   spec.AsBigQueryTableSchema(),
-		Clustering: &bigquery.Clustering{
-			Fields: []string{},
-		},
-	}
-
-	for _, field := range spec.Fields {
-		if field.Type.Type() == bigquery.GeographyFieldType {
-			metadata.Clustering.Fields = append(metadata.Clustering.Fields, field.Name)
-		}
-	}
-
-	return errors.Wrapf(table.Create(context.Background(), metadata), "creating table %s", table.FullyQualifiedName())
-
-}
-
 func (bq *BigQuery) createDatasetIfNotExists(ds *bigquery.Dataset) error {
 
 	ok, err := bq.datasetExists(ds)
@@ -64,10 +36,8 @@ func (bq *BigQuery) createDatasetIfNotExists(ds *bigquery.Dataset) error {
 		return nil
 	}
 
-	opts := &bigquery.DatasetMetadata{}
-
-	if bq.Location != "" {
-		opts.Location = bq.Location
+	opts := &bigquery.DatasetMetadata{
+		Location: bq.Location,
 	}
 
 	err = ds.Create(context.Background(), opts)
@@ -118,12 +88,6 @@ func (bq *BigQuery) Init() error {
 
 	if exists, err := bq.datasetExists(ds); err != nil || !exists {
 		return err
-	}
-
-	for _, spec := range bq.Tables {
-		if err := bq.createTable(*spec); err != nil {
-			return err
-		}
 	}
 
 	return nil
@@ -222,11 +186,9 @@ func (bq *BigQuery) generalizeTable(table *GeneralizedTableSpec) error {
 }
 
 type BigQuery struct {
+	GCS                     *gcs.GCS
 	Client                  *bigquery.Client
-	GCSClient               *storage.Client
 	ProjectId               string
-	TempGCSBucket           string
-	TempGCSPrefix           string
 	Location                string
 	Config                  database.Config
 	Tables                  map[string]*TableSpec
@@ -250,7 +212,7 @@ func (bq *BigQuery) Open() error {
 		return errors.Wrap(err, "creating BigQuery client")
 	}
 
-	bq.GCSClient, err = storage.NewClient(context.Background())
+	err = bq.GCS.Open()
 	if err != nil {
 		return errors.Wrap(err, "creating GCS client")
 	}
@@ -393,17 +355,20 @@ func (bq *BigQuery) Close() error {
 }
 
 func New(conf database.Config, m *config.Mapping) (database.DB, error) {
-	db := &BigQuery{}
 
-	db.Tables = make(map[string]*TableSpec)
-	db.GeneralizedTables = make(map[string]*GeneralizedTableSpec)
+	gcsConf := conf
+
+	db := &BigQuery{
+		Tables:            make(map[string]*TableSpec),
+		GeneralizedTables: make(map[string]*GeneralizedTableSpec),
+		Config:            conf,
+	}
 
 	var err error
-	db.Config = conf
 
 	// ConnectionParams is a list of semicolon-separated parameters
 	// bigquery://ProjectId={PROJECT ID};Location={LOCATION}
-	db.ProjectId, db.TempGCSBucket, db.TempGCSPrefix, db.Location = parseConnectionString(db.Config.ConnectionParams)
+	db.ProjectId, gcsConf.ConnectionParams, db.Location = parseConnectionString(db.Config.ConnectionParams)
 
 	for name, table := range m.Tables {
 		db.Tables[name], err = NewTableSpec(db, table)
@@ -418,6 +383,14 @@ func New(conf database.Config, m *config.Mapping) (database.DB, error) {
 		return nil, errors.Wrap(err, "preparing generalized table sources")
 	}
 	db.prepareGeneralizations()
+
+	// Create the GCS client
+	gcsClient, err := gcs.New(gcsConf, m)
+	if err != nil {
+		return nil, errors.Wrap(err, "starting GCS import")
+	}
+
+	db.GCS = gcsClient.(*gcs.GCS)
 
 	err = db.Open()
 	if err != nil {

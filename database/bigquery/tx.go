@@ -2,14 +2,11 @@ package bigquery
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
-	"sync"
 	"time"
 
 	"cloud.google.com/go/bigquery"
-	"cloud.google.com/go/storage"
-	goavro "github.com/linkedin/goavro/v2"
+	"github.com/omniscale/imposm3/database/gcs"
 	"github.com/omniscale/imposm3/log"
 	"github.com/pkg/errors"
 )
@@ -22,98 +19,37 @@ type TableImport interface {
 }
 
 type tableImport struct {
-	Bq               *BigQuery
-	Table            *bigquery.Table
-	GCSTempObject    *storage.ObjectHandle
-	avroWriter       *goavro.OCFWriter
-	tempObjectWriter *storage.Writer
-	Spec             *TableSpec
-	wg               *sync.WaitGroup
-	rows             chan []interface{}
+	Bq         *BigQuery
+	Table      *bigquery.Table
+	avroImport gcs.AvroImport
+	Spec       *TableSpec
 }
 
 func NewTableImport(bq *BigQuery, spec *TableSpec) TableImport {
 
-	table := bq.Client.Dataset(spec.Dataset).Table(spec.Name)
-	gcsKey := bq.TempGCSPrefix + spec.Name + ".avro"
-	gcsObject := bq.GCSClient.Bucket(bq.TempGCSBucket).Object(gcsKey)
-
-	tt := &tableImport{
-		Bq:            bq,
-		Table:         table,
-		GCSTempObject: gcsObject,
-		Spec:          spec,
-		wg:            &sync.WaitGroup{},
-		rows:          make(chan []interface{}, 64),
+	// Create GCS Avro table spec
+	gcsSpec, err := gcs.NewTableSpec(bq.GCS, spec.Table)
+	if err != nil {
+		log.DefaultLogger.Panicf("[import] creating Avro import table spec: %+v", err)
 	}
 
-	tt.wg.Add(1)
-	go tt.loop()
+	tt := &tableImport{
+		Bq:         bq,
+		Table:      bq.Client.Dataset(spec.Dataset).Table(spec.Name),
+		avroImport: gcs.NewAvroImport(bq.GCS, gcsSpec),
+		Spec:       spec,
+	}
 
 	return tt
 
 }
 
 func (tt *tableImport) Begin() error {
-
-	// Create GCS object writer
-	tt.tempObjectWriter = tt.GCSTempObject.NewWriter(context.Background())
-
-	// Marshal schema to JSON to parse to goavro codec
-	schema, err := json.Marshal(tt.Spec.AsAvroSchema())
-	if err != nil {
-		return errors.Wrap(err, "marshaling Avro schema")
-	}
-
-	// Create an Avro writer instance
-	tt.avroWriter, err = goavro.NewOCFWriter(goavro.OCFConfig{
-		W:               tt.tempObjectWriter,
-		Schema:          string(schema),
-		CompressionName: goavro.CompressionDeflateLabel,
-	})
-
-	return errors.Wrap(err, "creating Avro writer")
-
+	return tt.avroImport.Begin()
 }
 
 func (tt *tableImport) Insert(row []interface{}) error {
-	tt.rows <- row
-	return nil
-}
-
-func (tt *tableImport) loop() {
-
-	fields := tt.Spec.Fields
-
-	for row := range tt.rows {
-
-		// Convert each row, which is a slice of values, into a map
-		encodedValue := make(map[string]interface{})
-		for i, val := range row {
-
-			field := fields[i]
-
-			// Field must be passed as key-value map where key is the Avro type
-			// and value is the field value
-			var key AvroType = AvroTypeNull
-			if val != nil {
-				key = field.Type.AvroType()
-			}
-
-			encodedValue[field.BigQueryName()] = map[string]interface{}{string(key): val}
-		}
-
-		values := []map[string]interface{}{encodedValue}
-
-		if err := tt.avroWriter.Append(values); err != nil {
-			// InsertStmt uses COPY so the error may not be related to this row.
-			// Abort the import as the whole transaction is lost anyway.
-			log.Fatalf("[fatal] insert into %q: %+v", tt.Table.FullyQualifiedName(), err)
-		}
-	}
-
-	tt.wg.Done()
-
+	return tt.avroImport.Insert(row)
 }
 
 func (tt *tableImport) Delete(id int64) error {
@@ -122,31 +58,15 @@ func (tt *tableImport) Delete(id int64) error {
 
 func (tt *tableImport) End() error {
 
+	gcsUri := tt.avroImport.Location()
+
 	// Wait for all rows to be written
-	close(tt.rows)
-	tt.wg.Wait()
-
-	gcsUri := fmt.Sprintf(`gs://%s/%s`, tt.GCSTempObject.BucketName(), tt.GCSTempObject.ObjectName())
-
-	// Close the GCS temp file
-	if err := tt.tempObjectWriter.Close(); err != nil {
-		return errors.Wrapf(err, "closing GCS object writer: %s", gcsUri)
-	}
+	tt.avroImport.End()
 
 	// Create a temporary table for loading from GCS
-	//
 	// Note this extra step is necessary due to the limitations of BigQuery
 	// imports in relation to the GEOGRAPHY data type.
 	tempTable := tt.Bq.Client.Dataset(tt.Table.DatasetID).Table(tt.Table.TableID + "_tmp")
-	// err := tempTable.Create(context.Background(), &bigquery.TableMetadata{
-	// 	ExpirationTime: time.Now().Add(24 * time.Hour),
-	// 	Location:       tt.Bq.Client.Location,
-	// 	Description:    fmt.Sprintf(`imposm: Temporary table for loading data into %q`, tt.Table.FullyQualifiedName()),
-	// 	Schema:         tt.Spec.AsBigQueryTableSchema(),
-	// })
-	// if err != nil {
-	// 	return errors.Wrapf(err, "creating temporary BigQuery table %s", tempTable.FullyQualifiedName())
-	// }
 
 	// Create a GCS object reference with proper spec
 	gcsRef := bigquery.NewGCSReference(gcsUri)
@@ -191,7 +111,7 @@ func (tt *tableImport) End() error {
 	}
 
 	// Copy the data from the temporary table to the target table
-	copyQuery := fmt.Sprintf("CREATE OR REPLACE TABLE `%s.%s` AS ( SELECT * EXCEPT(geometry), ST_GEOGFROMWKB(geometry) AS geometry FROM `%s.%s` );", tt.Table.DatasetID, tt.Table.TableID, tempTable.DatasetID, tempTable.TableID)
+	copyQuery := fmt.Sprintf("CREATE OR REPLACE TABLE `%s.%s` CLUSTER BY geometry AS ( SELECT * EXCEPT(geometry), ST_GEOGFROMWKB(geometry) AS geometry FROM `%s.%s` );", tt.Table.DatasetID, tt.Table.TableID, tempTable.DatasetID, tempTable.TableID)
 	query := tt.Bq.Client.Query(copyQuery)
 
 	job, err = query.Run(context.Background())

@@ -15,9 +15,9 @@ type FieldSpec struct {
 	Name        string
 	MappingType mapping.ColumnType
 	Type        FieldType
-	Fields      []FieldSpec // Nested fields
 }
 type TableSpec struct {
+	Table           *config.Table
 	Name            string
 	Dataset         string
 	Fields          []FieldSpec
@@ -38,39 +38,6 @@ type GeneralizedTableSpec struct {
 	Generalizations   []*GeneralizedTableSpec
 }
 
-type AvroSchema struct {
-	Type   AvroType    `json:"type"`
-	Name   string      `json:"name"`
-	Fields []AvroField `json:"fields,omitempty"`
-}
-
-type AvroField struct {
-	Type    []AvroType  `json:"type"`
-	Name    string      `json:"name"`
-	Default interface{} `json:"default,omitempty"`
-	Fields  []AvroField `json:"fields,omitempty"` // Schema of fields in a Record
-	Symbols []string    `json:"symbols,omitempty"`
-	Items   *AvroField  `json:"items,omitempty"` // Schema of items in an Array
-}
-
-type AvroType string
-
-const (
-	AvroTypeNull   AvroType = "null"
-	AvroTypeBool   AvroType = "boolean"
-	AvroTypeInt    AvroType = "int"
-	AvroTypeLong   AvroType = "long"
-	AvroTypeFloat  AvroType = "float"
-	AvroTypeDouble AvroType = "double"
-	AvroTypeBytes  AvroType = "bytes"
-	AvroTypeString AvroType = "string"
-	AvroTypeRecord AvroType = "record"
-	AvroTypeEnum   AvroType = "enum"
-	AvroTypeArray  AvroType = "array"
-	AvroTypeMap    AvroType = "map"
-	AvroTypeFixed  AvroType = "fixed"
-)
-
 func (f *FieldSpec) BigQueryName() string {
 	// "BigQuery fields must contain only letters, numbers, and underscores,
 	// start with a letter or underscore, and be at most 300 characters long."
@@ -81,47 +48,17 @@ func (f *FieldSpec) BigQueryName() string {
 func (f *FieldSpec) AsBigQueryFieldSchema() *bigquery.FieldSchema {
 
 	schema := &bigquery.FieldSchema{
-		Name:     f.BigQueryName(),
-		Type:     f.Type.Type(),
-		Repeated: f.Type.Repeated(),
-	}
-
-	// Append nested fields
-	if len(f.Fields) > 0 {
-		for _, nestedField := range f.Fields {
-			schema.Schema = append(schema.Schema, nestedField.AsBigQueryFieldSchema())
-		}
-	}
-
-	return schema
-
-}
-
-func (f *FieldSpec) AsAvroFieldSchema() AvroField {
-
-	schema := AvroField{
 		Name: f.BigQueryName(),
-		Type: []AvroType{AvroTypeNull, f.Type.AvroType()},
+		Type: f.Type.BigQueryType(),
 	}
 
-	nestedFields := []AvroField{}
-
-	// Append nested fields
-	if len(f.Fields) > 0 {
-		for _, nestedField := range f.Fields {
-			nestedFields = append(nestedFields, nestedField.AsAvroFieldSchema())
+	// Define key/value nested fields for RECORD type
+	if schema.Type == bigquery.RecordFieldType {
+		schema.Repeated = true
+		schema.Schema = bigquery.Schema{
+			&bigquery.FieldSchema{Name: "key", Type: bigquery.StringFieldType},
+			&bigquery.FieldSchema{Name: "value", Type: bigquery.StringFieldType},
 		}
-	}
-
-	if f.Type.Repeated() {
-		schema.Type = []AvroType{AvroTypeNull, AvroTypeArray}
-		schema.Items = &AvroField{
-			Type:   []AvroType{AvroTypeNull, f.Type.AvroType()},
-			Name:   f.BigQueryName(),
-			Fields: nestedFields,
-		}
-	} else {
-		schema.Fields = nestedFields
 	}
 
 	return schema
@@ -134,21 +71,6 @@ func (spec *TableSpec) AsBigQueryTableSchema() bigquery.Schema {
 
 	for _, field := range spec.Fields {
 		schema = append(schema, field.AsBigQueryFieldSchema())
-	}
-
-	return schema
-
-}
-
-func (spec *TableSpec) AsAvroSchema() AvroSchema {
-
-	schema := AvroSchema{
-		Name: spec.Name,
-		Type: AvroTypeRecord,
-	}
-
-	for _, field := range spec.Fields {
-		schema.Fields = append(schema.Fields, field.AsAvroFieldSchema())
 	}
 
 	return schema
@@ -176,7 +98,9 @@ func (spec *TableSpec) DeleteSQL() string {
 }
 
 func NewTableSpec(bq *BigQuery, t *config.Table) (*TableSpec, error) {
+
 	var geomType string
+
 	if mapping.TableType(t.Type) == mapping.RelationMemberTable {
 		geomType = "geometry"
 	} else {
@@ -184,6 +108,7 @@ func NewTableSpec(bq *BigQuery, t *config.Table) (*TableSpec, error) {
 	}
 
 	spec := TableSpec{
+		Table:        t,
 		Name:         t.Name,
 		Dataset:      bq.Config.ImportSchema,
 		GeometryType: geomType,
@@ -202,7 +127,7 @@ func NewTableSpec(bq *BigQuery, t *config.Table) (*TableSpec, error) {
 			return nil, errors.Errorf("unhandled column type %v, using string type", columnType)
 		}
 
-		col := FieldSpec{column.Name, *columnType, bqType, nil}
+		col := FieldSpec{column.Name, *columnType, bqType}
 		spec.Fields = append(spec.Fields, col)
 
 	}
