@@ -111,7 +111,17 @@ func (tt *tableImport) End() error {
 	}
 
 	// Copy the data from the temporary table to the target table
-	copyQuery := fmt.Sprintf("CREATE OR REPLACE TABLE `%s.%s` CLUSTER BY geometry AS ( SELECT * EXCEPT(geometry), ST_GEOGFROMWKB(geometry) AS geometry FROM `%s.%s` );", tt.Table.DatasetID, tt.Table.TableID, tempTable.DatasetID, tempTable.TableID)
+	copyQuery := fmt.Sprintf("CREATE OR REPLACE TABLE `%s.%s` AS ( SELECT * FROM `%s.%s` );", tt.Table.DatasetID, tt.Table.TableID, tempTable.DatasetID, tempTable.TableID)
+
+	// If the table contains a geometry column, makle sure to parse WKB and cluster
+	// by geography
+	for _, field := range tt.Spec.Fields {
+		if field.Type.BigQueryType() == bigquery.GeographyFieldType {
+			copyQuery = fmt.Sprintf("CREATE OR REPLACE TABLE `%s.%s` CLUSTER BY geometry AS ( SELECT * EXCEPT(geometry), ST_GEOGFROMWKB(geometry) AS geometry FROM `%s.%s` );", tt.Table.DatasetID, tt.Table.TableID, tempTable.DatasetID, tempTable.TableID)
+			break
+		}
+	}
+
 	query := tt.Bq.Client.Query(copyQuery)
 
 	job, err = query.Run(context.Background())

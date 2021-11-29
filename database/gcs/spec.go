@@ -1,6 +1,7 @@
 package gcs
 
 import (
+	"reflect"
 	"regexp"
 
 	"github.com/omniscale/imposm3/mapping"
@@ -28,12 +29,13 @@ type AvroSchema struct {
 }
 
 type AvroField struct {
-	Type    []AvroType  `json:"type"`
-	Name    string      `json:"name"`
-	Default interface{} `json:"default,omitempty"`
-	Fields  []AvroField `json:"fields,omitempty"` // Schema of fields in a Record
-	Symbols []string    `json:"symbols,omitempty"`
-	Items   *AvroField  `json:"items,omitempty"` // Schema of items in an Array
+	Type      interface{} `json:"type"`
+	Name      string      `json:"name,omitempty"`
+	Namespace string      `json:"namespace,omitempty"`
+	Default   interface{} `json:"default,omitempty"`
+	Fields    []AvroField `json:"fields,omitempty"` // Schema of fields in a Record
+	Symbols   []string    `json:"symbols,omitempty"`
+	Items     *AvroField  `json:"items,omitempty"` // Schema of items in an Array
 }
 
 type AvroType string
@@ -61,35 +63,66 @@ func (f *FieldSpec) AvroName() string {
 
 func (f *FieldSpec) AsAvroFieldSchema() AvroField {
 
-	schema := AvroField{
-		Name: f.AvroName(),
-		Type: []AvroType{AvroTypeNull, f.Type.AvroType()},
-	}
-
-	// Append nested fields
-	if f.Type.AvroType() == AvroTypeRecord {
-		schema.Type = []AvroType{AvroTypeNull, AvroTypeArray}
-		schema.Items = &AvroField{
-			Type: []AvroType{AvroTypeRecord},
+	// Thisis a special key/value nested record type
+	if _, ok := f.Type.(*tagsType); ok {
+		return AvroField{
 			Name: f.AvroName(),
-			Fields: []AvroField{
-				AvroField{Name: "key", Type: []AvroType{AvroTypeString}},
-				AvroField{Name: "value", Type: []AvroType{AvroTypeNull, AvroTypeString}},
+			Type: AvroField{
+				Type:    AvroTypeArray,
+				Default: []interface{}{},
+				Items: &AvroField{
+					Type:      AvroTypeRecord,
+					Name:      "Tags",
+					Namespace: "root",
+					Fields: []AvroField{
+						{Name: "key", Type: AvroTypeString},
+						{Name: "value", Type: AvroTypeString},
+					},
+				},
 			},
 		}
 	}
 
-	return schema
+	// Primitive data types
+	return AvroField{
+		Name: f.AvroName(),
+		Type: []AvroType{AvroTypeNull, f.Type.AvroType()},
+	}
 
 }
 
 func (f *AvroField) PrimaryType() AvroType {
-	for _, t := range f.Type {
-		if t != AvroTypeNull {
-			return t
+
+	if val, ok := f.Type.(AvroType); ok {
+		return val
+	}
+
+	if val, ok := f.Type.([]AvroType); ok {
+		for _, t := range val {
+			if t != AvroTypeNull {
+				return t
+			}
 		}
 	}
+
 	return AvroTypeNull
+
+}
+
+func (t AvroType) ValueAsType(in interface{}) interface{} {
+	switch t {
+	case AvroTypeString, AvroTypeEnum:
+		return reflect.ValueOf(in).String()
+	case AvroTypeBool:
+		return reflect.ValueOf(in).Bool()
+	case AvroTypeBytes:
+		return reflect.ValueOf(in).Bytes()
+	case AvroTypeDouble, AvroTypeFixed, AvroTypeFloat:
+		return reflect.ValueOf(in).Float()
+	case AvroTypeInt, AvroTypeLong:
+		return reflect.ValueOf(in).Int()
+	}
+	return in
 }
 
 func (spec *TableSpec) AsAvroSchema() AvroSchema {

@@ -7,6 +7,7 @@ import (
 	"sync"
 
 	"cloud.google.com/go/storage"
+	"github.com/lib/pq/hstore"
 	goavro "github.com/linkedin/goavro/v2"
 	"github.com/omniscale/imposm3/log"
 	"github.com/pkg/errors"
@@ -87,7 +88,7 @@ func (tt *GCSAvroImport) loop() {
 		encodedValue := make(map[string]interface{})
 		for i, cell := range row {
 			field := fields[i]
-			encodedValue[field.AvroName()] = encodeFieldAvro(field.AsAvroFieldSchema(), cell)
+			encodedValue[field.AvroName()] = encodeFieldAvro(field, cell)
 		}
 
 		values := []map[string]interface{}{encodedValue}
@@ -101,33 +102,38 @@ func (tt *GCSAvroImport) loop() {
 
 }
 
-func encodeFieldAvro(field AvroField, value interface{}) map[string]interface{} {
+func encodeFieldAvro(field FieldSpec, value interface{}) interface{} {
 
-	avroType := field.PrimaryType()
-	encodedValue := value
+	avroSchema := field.AsAvroFieldSchema()
+	avroType := avroSchema.PrimaryType()
 
-	// Field must be passed as key-value map where key is the Avro type
-	// and value is the field value
-	var key = string(AvroTypeNull)
+	// Tags must be returned as key/value pair array, but since they
+	// are pre-formatted as Potgres hstore type, they need to be parsed
+	// first
+	if _, ok := field.Type.(*tagsType); ok {
 
-	if encodedValue != nil {
+		hst := hstore.Hstore{}
+		encodedValue := make([]map[string]interface{}, 0)
 
-		key = string(avroType)
-
-		// Records must be re-encoded
-		if avroType == AvroTypeRecord {
-
-			valueMap := value.(map[string]interface{})
-
-			for _, nestedField := range field.Fields {
-				encodedValue = encodeFieldAvro(nestedField, valueMap[nestedField.Name])
+		if err := hst.Scan([]byte(value.(string))); err == nil {
+			for k, v := range hst.Map {
+				encodedValue = append(encodedValue, map[string]interface{}{
+					"key":   k,
+					"value": v.String,
+				})
 			}
-
 		}
+
+		return encodedValue
 
 	}
 
-	return map[string]interface{}{key: encodedValue}
+	// Primitive types must be returned as type:value map
+	if value == nil {
+		return map[string]interface{}{string(AvroTypeNull): nil}
+	}
+
+	return map[string]interface{}{string(avroType): avroType.ValueAsType(value)}
 
 }
 
