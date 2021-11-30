@@ -1,0 +1,10 @@
+Dockerfile
+package.sh
+Vagrantfile
+.DS_Store
+docs/_build
+mapping.json
+config.json
+test/build
+test/.lasttestrun*
+test/*.pyc
