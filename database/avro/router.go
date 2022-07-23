@@ -1,28 +1,48 @@
-package gcs
+package avro
 
 import (
-	"github.com/omniscale/imposm3/database/avro"
+	"os"
+	"path"
+
 	"github.com/pkg/errors"
 )
 
 // TxRouter routes inserts/deletes to TableTx
 type TxRouter struct {
-	Tables map[string]avro.AvroTx
-	gcs    *GCS
+	Tables map[string]AvroTx
+	db     *AvroDB
 }
 
-func newTxRouter(gcs *GCS, bulkImport bool) (*TxRouter, error) {
+type FileWriter struct {
+	*os.File
+	Name string
+}
+
+func (w *FileWriter) Location() string {
+	return w.Name
+}
+
+func newTxRouter(db *AvroDB, bulkImport bool) (*TxRouter, error) {
 	txr := TxRouter{
-		Tables: make(map[string]avro.AvroTx),
+		Tables: make(map[string]AvroTx),
 	}
 
-	for tableName, table := range gcs.Tables {
-		tt := NewTx(gcs, table)
-		err := tt.Begin()
+	for tableName, table := range db.Tables {
+
+		var fpath = path.Join(db.Path, tableName+".avro")
+		file, err := os.OpenFile(fpath, os.O_CREATE|os.O_TRUNC|os.O_RDWR, 0777)
+		if err != nil {
+			return nil, errors.Wrapf(err, "opening file %q", fpath)
+		}
+
+		tt := NewTx(table, &FileWriter{file, fpath})
+		err = tt.Begin()
 		if err != nil {
 			return nil, err
 		}
+
 		txr.Tables[tableName] = tt
+
 	}
 
 	return &txr, nil

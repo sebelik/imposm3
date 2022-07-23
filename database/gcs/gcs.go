@@ -9,6 +9,7 @@ import (
 	"cloud.google.com/go/storage"
 	osm "github.com/omniscale/go-osm"
 	"github.com/omniscale/imposm3/database"
+	"github.com/omniscale/imposm3/database/avro"
 	"github.com/omniscale/imposm3/geom"
 	"github.com/omniscale/imposm3/log"
 	"github.com/omniscale/imposm3/mapping"
@@ -40,7 +41,7 @@ type GCS struct {
 	Bucket                  string
 	Prefix                  string
 	Config                  database.Config
-	Tables                  map[string]*TableSpec
+	Tables                  map[string]*avro.TableSpec
 	txRouter                *TxRouter
 	updateGeneralizedTables bool
 }
@@ -128,7 +129,7 @@ func (gcs *GCS) Close() error {
 func New(conf database.Config, m *config.Mapping) (database.DB, error) {
 
 	db := &GCS{
-		Tables: make(map[string]*TableSpec),
+		Tables: make(map[string]*avro.TableSpec),
 		Config: conf,
 	}
 
@@ -138,7 +139,7 @@ func New(conf database.Config, m *config.Mapping) (database.DB, error) {
 	db.Bucket, db.Prefix = parseGCSURI(db.Config.ConnectionParams)
 
 	for name, table := range m.Tables {
-		db.Tables[name], err = NewTableSpec(db, table)
+		db.Tables[name], err = avro.NewTableSpec(table, conf.Srid)
 		if err != nil {
 			return nil, errors.Wrapf(err, "creating table spec for %q", name)
 		}
@@ -153,7 +154,7 @@ func New(conf database.Config, m *config.Mapping) (database.DB, error) {
 
 }
 
-// parseConnectionString accepts a connection string and returns a parsed
+// parseGCSURI accepts a connection string and returns a parsed
 // bucket name and object prefix
 //
 // The connection string should be in the format:

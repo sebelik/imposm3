@@ -1,4 +1,4 @@
-package gcs
+package avro
 
 import (
 	"reflect"
@@ -16,7 +16,6 @@ type FieldSpec struct {
 }
 type TableSpec struct {
 	Name         string
-	Bucket       string
 	Fields       []FieldSpec
 	GeometryType string
 	Srid         int
@@ -64,7 +63,7 @@ func (f *FieldSpec) AvroName() string {
 func (f *FieldSpec) AsAvroFieldSchema() AvroField {
 
 	// Thisis a special key/value nested record type
-	if _, ok := f.Type.(*tagsType); ok {
+	if _, ok := f.Type.(*TagsType); ok {
 		return AvroField{
 			Name: f.AvroName(),
 			Type: AvroField{
@@ -140,7 +139,7 @@ func (spec *TableSpec) AsAvroSchema() AvroSchema {
 
 }
 
-func NewTableSpec(gcs *GCS, t *config.Table) (*TableSpec, error) {
+func NewTableSpec(t *config.Table, srid int) (*TableSpec, error) {
 
 	var geomType string
 
@@ -152,9 +151,8 @@ func NewTableSpec(gcs *GCS, t *config.Table) (*TableSpec, error) {
 
 	spec := TableSpec{
 		Name:         t.Name,
-		Bucket:       gcs.Bucket,
 		GeometryType: geomType,
-		Srid:         gcs.Config.Srid,
+		Srid:         srid,
 	}
 
 	for _, column := range t.Columns {

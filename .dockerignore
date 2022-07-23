@@ -8,3 +8,4 @@ config.json
 test/build
 test/.lasttestrun*
 test/*.pyc
+.git

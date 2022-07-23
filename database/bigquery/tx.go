@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"cloud.google.com/go/bigquery"
+	"github.com/omniscale/imposm3/database/avro"
 	"github.com/omniscale/imposm3/database/gcs"
 	"github.com/omniscale/imposm3/log"
 	"github.com/pkg/errors"
@@ -19,25 +20,25 @@ type TableImport interface {
 }
 
 type tableImport struct {
-	Bq         *BigQuery
-	Table      *bigquery.Table
-	avroImport gcs.AvroImport
-	Spec       *TableSpec
+	Bq     *BigQuery
+	Table  *bigquery.Table
+	avroTx avro.AvroTx
+	Spec   *TableSpec
 }
 
 func NewTableImport(bq *BigQuery, spec *TableSpec) TableImport {
 
-	// Create GCS Avro table spec
-	gcsSpec, err := gcs.NewTableSpec(bq.GCS, spec.Table)
+	// Create Avro table spec
+	gcsSpec, err := avro.NewTableSpec(spec.Table, bq.Config.Srid)
 	if err != nil {
 		log.DefaultLogger.Panicf("[import] creating Avro import table spec: %+v", err)
 	}
 
 	tt := &tableImport{
-		Bq:         bq,
-		Table:      bq.Client.Dataset(spec.Dataset).Table(spec.Name),
-		avroImport: gcs.NewAvroImport(bq.GCS, gcsSpec),
-		Spec:       spec,
+		Bq:     bq,
+		Table:  bq.Client.Dataset(spec.Dataset).Table(spec.Name),
+		avroTx: gcs.NewTx(bq.GCS, gcsSpec),
+		Spec:   spec,
 	}
 
 	return tt
@@ -45,11 +46,11 @@ func NewTableImport(bq *BigQuery, spec *TableSpec) TableImport {
 }
 
 func (tt *tableImport) Begin() error {
-	return tt.avroImport.Begin()
+	return tt.avroTx.Begin()
 }
 
 func (tt *tableImport) Insert(row []interface{}) error {
-	return tt.avroImport.Insert(row)
+	return tt.avroTx.Insert(row)
 }
 
 func (tt *tableImport) Delete(id int64) error {
@@ -58,10 +59,10 @@ func (tt *tableImport) Delete(id int64) error {
 
 func (tt *tableImport) End() error {
 
-	gcsUri := tt.avroImport.Location()
+	gcsUri := tt.avroTx.Location()
 
 	// Wait for all rows to be written
-	tt.avroImport.End()
+	tt.avroTx.End()
 
 	// Create a temporary table for loading from GCS
 	// Note this extra step is necessary due to the limitations of BigQuery
