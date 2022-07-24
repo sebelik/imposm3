@@ -27,11 +27,11 @@ type AvroWriter interface {
 
 // provides write methods for a single table
 type AvroTable struct {
-	AvroDBWriter *goavro.OCFWriter
-	Spec         *TableSpec
-	Writer       AvroWriter
-	wg           *sync.WaitGroup
-	rows         chan []interface{}
+	AvroWriter *goavro.OCFWriter
+	Spec       *TableSpec
+	Writer     AvroWriter
+	wg         *sync.WaitGroup
+	rows       chan []interface{}
 }
 
 func NewTx(spec *TableSpec, writer AvroWriter) AvroTx {
@@ -59,10 +59,10 @@ func (tt *AvroTable) Begin() (err error) {
 	}
 
 	// Create an AvroDB writer instance
-	tt.AvroDBWriter, err = goavro.NewOCFWriter(goavro.OCFConfig{
+	tt.AvroWriter, err = goavro.NewOCFWriter(goavro.OCFConfig{
 		W:               tt.Writer,
 		Schema:          string(schema),
-		CompressionName: goavro.CompressionDeflateLabel,
+		CompressionName: goavro.CompressionNullLabel,
 	})
 
 	return errors.Wrap(err, "creating AvroDB writer")
@@ -89,7 +89,7 @@ func (tt *AvroTable) loop() {
 
 		values := []map[string]interface{}{encodedValue}
 
-		if err := tt.AvroDBWriter.Append(values); err != nil {
+		if err := tt.AvroWriter.Append(values); err != nil {
 			log.Fatalf("[fatal] write into %+v", tt.Spec.Name, err)
 		}
 	}

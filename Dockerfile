@@ -81,36 +81,35 @@ WORKDIR $SRC
 RUN $CURL https://storage.googleapis.com/golang/go1.17.3.linux-amd64.tar.gz -O && \
     	tar xzf go1.17.3.linux-amd64.tar.gz -C $BUILD_BASE/
 
-# Add the source code
-WORKDIR $IMPOSM_SRC
-COPY . .
-
-# Compile the imposm binary
-RUN make build
-
-# Move the compiled library to build temp dir
-RUN rm -rf $BUILD_TMP && mkdir -p $BUILD_TMP
-RUN cp imposm $BUILD_TMP
+# Prepare build temp dir
+RUN rm -rf $BUILD_TMP && \
+		mkdir -p $BUILD_TMP && \
+		mkdir -p $BUILD_TMP/lib
 
 # Copy dependency libraries to build temp dir
 WORKDIR $PREFIX/lib
-RUN mkdir -p $BUILD_TMP/lib
 RUN cp libgeos_c.so $BUILD_TMP/lib && \
 		ln -s libgeos_c.so $BUILD_TMP/lib/libgeos_c.so.1 && \
 		cp libgeos.so $BUILD_TMP/lib && \
-		ln -s libgeos.so $BUILD_TMP/lib/libgeos-$GEOS_VERSION.so
-
-RUN cp libhyperleveldb.so $BUILD_TMP/lib && \
+		ln -s libgeos.so $BUILD_TMP/lib/libgeos-$GEOS_VERSION.so && \
+		cp libhyperleveldb.so $BUILD_TMP/lib && \
         ln -s libhyperleveldb.so $BUILD_TMP/lib/libhyperleveldb.so.0 && \
         ln -s libhyperleveldb.so $BUILD_TMP/lib/libleveldb.so.1
 
 WORKDIR $BUILD_TMP/lib
 RUN chrpath libgeos_c.so -r '${ORIGIN}'
 
+# Add the source code
+WORKDIR $IMPOSM_SRC
+COPY . .
+
+# Compile the imposm binary
+RUN make build && \
+		cp imposm $BUILD_TMP
+
 # Make dist package from build temp dir
 WORKDIR $BUILD_BASE
 ENV VERSION `$BUILD_TMP/imposm version`-linux-x86-64
 RUN rm -rf dist && \
-		cp -R imposm-build dist
-
-RUN chmod 777 dist/imposm
+		cp -R imposm-build dist && \
+		chmod 777 dist/imposm
